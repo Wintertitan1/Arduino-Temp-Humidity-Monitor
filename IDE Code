@@ -1,0 +1,174 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+
+// ---------------- OLED ----------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// ---------------- Sensor (KY-015 = DHT11) ----------------
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ---------------- Button ----------------
+// Wire button between D3 and GND. Uses internal pull-up.
+const int BTN_PIN = 3;
+const unsigned long DEBOUNCE_MS = 30;
+
+// ---------------- UI behavior ----------------
+const unsigned long PAGE_MS = 3500;     // auto switch between temp and humidity in ms (EX: 3500 is 3.5 seconds so change this to your liking)
+const unsigned long SENSOR_MS = 2000;   // DHT11 update interval (Dont mess with this as the sensor takes readings every 2000 ms)
+
+bool showFahrenheit = true;
+bool showTempPage = true;
+
+unsigned long lastPageFlip = 0;
+unsigned long lastSensorRead = 0;
+
+// Debounce state
+bool lastRaw = HIGH;
+bool stableState = HIGH;
+unsigned long lastDebounceTime = 0;
+
+// Stored sensor values
+float humidity = NAN;
+float tempC = NAN;
+float tempF = NAN;
+
+// -------------- Centered text helper --------------
+void drawCenteredText(const String &text, int textSize) {
+  display.setTextSize(textSize);
+
+  const int charW = 6 * textSize;
+  const int charH = 8 * textSize;
+  int textW = text.length() * charW;
+
+  int x = (SCREEN_WIDTH - textW) / 2;
+  int y = (SCREEN_HEIGHT - charH) / 2 + 2;
+
+  if (x < 0) x = 0;
+
+  display.setCursor(x, y);
+  display.print(text);
+}
+
+void drawTemp() {
+  display.clearDisplay();
+
+  String s;
+  if (showFahrenheit) {
+    s = String((int)round(tempF)) + (char)247 + "F";
+  } else {
+    s = String((int)round(tempC)) + (char)247 + "C";
+  }
+
+  drawCenteredText(s, 4);
+  display.display();
+}
+
+void drawHumidity() {
+  display.clearDisplay();
+
+  String s = String((int)round(humidity)) + "%";
+  drawCenteredText(s, 4);
+
+  display.display();
+}
+
+void drawSensorError() {
+  display.clearDisplay();
+  drawCenteredText("ERROR", 2);
+  display.display();
+}
+
+void toggleUnits() {
+  showFahrenheit = !showFahrenheit;
+  showTempPage = true;
+  lastPageFlip = millis();
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  dht.begin();
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    while (1);
+  }
+
+  display.setTextColor(SSD1306_WHITE);
+  display.clearDisplay();
+  drawCenteredText("READY", 2);
+  display.display();
+
+  delay(600);
+
+  lastPageFlip = millis();
+  lastSensorRead = millis() - SENSOR_MS; // force immediate first read
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // ---- Button debounce + click on release ----
+  bool raw = digitalRead(BTN_PIN);
+
+  if (raw != lastRaw) {
+    lastDebounceTime = now;
+    lastRaw = raw;
+  }
+
+  if ((now - lastDebounceTime) > DEBOUNCE_MS) {
+    if (raw != stableState) {
+      stableState = raw;
+
+      if (stableState == HIGH) { // released
+        toggleUnits();
+      }
+    }
+  }
+
+  // ---- Auto page flip ----
+  if (now - lastPageFlip >= PAGE_MS) {
+    showTempPage = !showTempPage;
+    lastPageFlip = now;
+  }
+
+  // ---- Read sensor only every 2 seconds ----
+  if (now - lastSensorRead >= SENSOR_MS) {
+    lastSensorRead = now;
+
+    float h = dht.readHumidity();
+    float c = dht.readTemperature();
+    float f = dht.readTemperature(true);
+
+    if (!isnan(h) && !isnan(c) && !isnan(f)) {
+      humidity = h;
+      tempC = c;
+      tempF = f;
+
+      Serial.print("Humidity: ");
+      Serial.print(humidity);
+      Serial.print("%  Temp: ");
+      Serial.print(tempF);
+      Serial.print("F / ");
+      Serial.print(tempC);
+      Serial.println("C");
+    }
+  }
+
+  // ---- Draw current page using last good reading ----
+  if (isnan(humidity) || isnan(tempC) || isnan(tempF)) {
+    drawSensorError();
+  } else {
+    if (showTempPage) drawTemp();
+    else drawHumidity();
+  }
+
+  delay(30);
+}
